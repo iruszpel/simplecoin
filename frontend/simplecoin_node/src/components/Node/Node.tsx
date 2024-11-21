@@ -4,10 +4,12 @@ import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { v4 as uuidv4 } from "uuid";
+import { useBlockchainStore } from "./Blockchain";
 
 import { usePeerConnections } from "./hooks/usePeerConnections";
 import { useSignaling } from "./hooks/useSignaling";
 import { useMessaging } from "./hooks/useMessaging";
+import { Block, Transaction } from "./Block";
 
 export const Node: React.FC = () => {
   const [nodeId] = useState<string>(uuidv4());
@@ -16,7 +18,45 @@ export const Node: React.FC = () => {
   const [messages, setMessages] = useState<string[]>([]);
   const seenMessages = useRef<Set<string>>(new Set());
 
-  const handleDataChannelMessage = (data: any, senderId: string) => {
+  const blockchain = useBlockchainStore();
+  const currentBlock = blockchain.getLatestBlock();
+  const isMining = blockchain.isMining;
+
+  const handleReceivedBlock = async (blockData: any) => {
+    const newBlock = new Block(
+      blockData.index,
+      blockData.timestamp,
+      blockData.transactions,
+      blockData.previousHash
+    );
+    newBlock.hash = blockData.hash;
+    newBlock.nonce = blockData.nonce;
+
+    try {
+      const success = await blockchain.addBlock(newBlock);
+      if (success) {
+        setMessages((prev) => [
+          ...prev,
+          `Received valid block ${newBlock.index}`,
+        ]);
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          `Received invalid block ${newBlock.index}`,
+        ]);
+      }
+    } catch (error) {
+      setMessages((prev) => [...prev, `Block error: ${error}`]);
+    }
+  };
+
+  const handleReceivedTransaction = (transactionData: any) => {
+    const transaction: Transaction = transactionData;
+    blockchain.createTransaction(transaction);
+    setMessages((prev) => [...prev, `Received transaction ${transaction.id}`]);
+  };
+
+  const handleDataChannelMessage = async (data: any, senderId: string) => {
     const message = JSON.parse(data);
     switch (message.type) {
       case "peer-list": {
@@ -44,9 +84,41 @@ export const Node: React.FC = () => {
         }
 
         break;
+      case "new-block":
+        await handleReceivedBlock(message.block);
+        break;
+
+      case "new-transaction":
+        try {
+          handleReceivedTransaction(message.transaction);
+        } catch (error) {
+          setMessages((prev) => [...prev, `Transaction error: ${error}`]);
+        }
+        break;
       default:
         break;
     }
+  };
+
+  const broadcastBlock = (block: Block) => {
+    const message = {
+      type: "new-block",
+      block,
+      nodeId,
+    };
+
+    dataChannels.current.forEach((channel) => {
+      if (channel.readyState === "open") {
+        channel.send(JSON.stringify(message));
+      }
+    });
+  };
+
+  const handleMineTransactions = async () => {
+    await blockchain.minePendingTransactions(nodeId);
+
+    broadcastBlock(blockchain.getLatestBlock());
+    setMessages((prev) => [...prev, "Mined new block"]);
   };
 
   const {
@@ -84,6 +156,17 @@ export const Node: React.FC = () => {
   return (
     <div className="node">
       <h1>Node ID: {nodeId}</h1>
+
+      <div>
+        <h2>Current Block</h2>
+        <p>Index: {currentBlock.index}</p>
+        <p>Hash: {currentBlock.hash}</p>
+      </div>
+
+      <div>
+        <h2>Mining Status</h2>
+        <p>{isMining ? "Mining in progress..." : "Idle"}</p>
+      </div>
 
       <div>
         <h2>Create Offer</h2>
@@ -139,6 +222,11 @@ export const Node: React.FC = () => {
             <li key={idx}>{msg}</li>
           ))}
         </ul>
+      </div>
+
+      <div>
+        <h2>Mine Pending Transactions</h2>
+        <Button onClick={handleMineTransactions}>Mine Transactions</Button>
       </div>
     </div>
   );
