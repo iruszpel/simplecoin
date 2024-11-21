@@ -1,4 +1,3 @@
-// blockchainStore.ts
 import { create } from "zustand";
 import { Block, Transaction } from "./Block";
 
@@ -13,6 +12,7 @@ interface BlockchainState {
   createTransaction: (transaction: Transaction) => void;
   getBalanceOfAddress: (address: string) => number;
   addBlock: (block: Block) => Promise<boolean>;
+  replaceChain: (newChain: Block[]) => Promise<boolean>;
 }
 
 const genesisBlock = new Block(0, 17321402820000, [], "0");
@@ -91,31 +91,65 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
   addBlock: async (block: Block): Promise<boolean> => {
     const { chain, difficulty, getLatestBlock } = get();
 
-    // Verify previous hash links to our chain
     const latestBlock = getLatestBlock();
     if (block.previousHash !== latestBlock.hash) {
       console.error("Invalid previous hash");
       return false;
     }
 
-    // Verify block index
     if (block.index !== chain.length) {
       console.error("Invalid block index");
       return false;
     }
 
-    // Verify block is valid (hash + proof of work)
     const isValid = await block.isValid(difficulty);
     if (!isValid) {
       console.error("Invalid block hash/proof of work");
       return false;
     }
 
-    // Add block to chain
     set((state) => ({
       chain: [...state.chain, block],
-      pendingTransactions: [], // Clear pending transactions that are now in block
+      pendingTransactions: [],
     }));
+    return true;
+  },
+
+  replaceChain: async (newChain: Block[]): Promise<boolean> => {
+    const { chain, difficulty } = get();
+
+    console.log("Received chain with length", newChain.length);
+    console.log("Current chain length", chain.length);
+    console.log("newChain", newChain);
+    console.log("chain", chain);
+
+    if (!newChain || newChain.length === 0) {
+      console.error("Received empty chain");
+      return false;
+    }
+
+    if (newChain.length <= chain.length) {
+      console.error("Received chain is not longer than current chain");
+      return false;
+    }
+
+    for (let i = 1; i < newChain.length; i++) {
+      const currentBlock = newChain[i];
+      const previousBlock = newChain[i - 1];
+
+      if (currentBlock.previousHash !== previousBlock.hash) {
+        console.error("Invalid previous hash at block", currentBlock.index);
+        return false;
+      }
+
+      const isValid = await currentBlock.isValid(difficulty);
+      if (!isValid) {
+        console.error("Invalid hash at block", currentBlock.index);
+        return false;
+      }
+    }
+
+    set({ chain: newChain });
     return true;
   },
 }));

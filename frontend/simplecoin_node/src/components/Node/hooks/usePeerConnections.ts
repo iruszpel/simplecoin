@@ -4,7 +4,8 @@ import { useRef, useState } from "react";
 export const usePeerConnections = (
   nodeId: string,
   setMessages: React.Dispatch<React.SetStateAction<string[]>>,
-  handleDataChannelMessage: (data: any, senderId: string) => void
+  handleDataChannelMessage: (data: any, senderId: string) => void,
+  onDataChannelOpen: (remoteNodeId: string, channel: RTCDataChannel) => void
 ) => {
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
   const dataChannels = useRef<Map<string, RTCDataChannel>>(new Map());
@@ -51,6 +52,8 @@ export const usePeerConnections = (
         peers: Array.from(dataChannels.current.keys()),
       };
       channel.send(JSON.stringify(peerListMessage));
+
+      onDataChannelOpen(remoteNodeId, channel);
     };
 
     channel.onmessage = (event) => {

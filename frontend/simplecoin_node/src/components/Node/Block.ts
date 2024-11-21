@@ -1,8 +1,7 @@
-// Block.ts
 export interface Transaction {
   id: string;
   timestamp: number;
-  fromAddress: string | null; // null for coinbase transactions
+  fromAddress: string | null;
   toAddress: string;
   amount: number;
 }

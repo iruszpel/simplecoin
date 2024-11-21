@@ -56,6 +56,32 @@ export const Node: React.FC = () => {
     setMessages((prev) => [...prev, `Received transaction ${transaction.id}`]);
   };
 
+  const handleReceivedBlockchain = async (receivedChainData: any[]) => {
+    const receivedChain: Block[] = await Promise.all(
+      receivedChainData.map(async (blockData: any) => {
+        const block = new Block(
+          blockData.index,
+          blockData.timestamp,
+          blockData.transactions,
+          blockData.previousHash
+        );
+        block.hash = blockData.hash;
+        block.nonce = blockData.nonce;
+        return block;
+      })
+    );
+
+    const isValid = await blockchain.replaceChain(receivedChain);
+    if (isValid) {
+      setMessages((prev) => [
+        ...prev,
+        `Blockchain updated with received chain`,
+      ]);
+    } else {
+      setMessages((prev) => [...prev, `Received invalid blockchain`]);
+    }
+  };
+
   const handleDataChannelMessage = async (data: any, senderId: string) => {
     const message = JSON.parse(data);
     switch (message.type) {
@@ -95,6 +121,11 @@ export const Node: React.FC = () => {
           setMessages((prev) => [...prev, `Transaction error: ${error}`]);
         }
         break;
+
+      case "blockchain":
+        await handleReceivedBlockchain(message.chain);
+        break;
+
       default:
         break;
     }
@@ -121,6 +152,15 @@ export const Node: React.FC = () => {
     setMessages((prev) => [...prev, "Mined new block"]);
   };
 
+  const onDataChannelOpen = (remoteNodeId: string, channel: RTCDataChannel) => {
+    const blockchainMessage = {
+      type: "blockchain",
+      chain: blockchain.chain,
+      nodeId,
+    };
+    channel.send(JSON.stringify(blockchainMessage));
+  };
+
   const {
     peerConnections,
     dataChannels,
@@ -130,7 +170,12 @@ export const Node: React.FC = () => {
     setupDataChannel,
     setKnownPeers,
     setOpenChannelNodeIds,
-  } = usePeerConnections(nodeId, setMessages, handleDataChannelMessage);
+  } = usePeerConnections(
+    nodeId,
+    setMessages,
+    handleDataChannelMessage,
+    onDataChannelOpen
+  );
 
   const {
     handleCreateOffer,
