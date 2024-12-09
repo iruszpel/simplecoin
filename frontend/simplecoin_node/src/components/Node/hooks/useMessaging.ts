@@ -14,6 +14,7 @@ export const useMessaging = (
       if (channel.readyState === "open") {
         const message = {
           type: "message",
+          messageType: "text",
           content: messageToSend,
           messageId: messageId,
           nodeId,

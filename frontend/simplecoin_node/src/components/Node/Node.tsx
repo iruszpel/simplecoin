@@ -102,18 +102,36 @@ export const Node: React.FC = () => {
         console.log("Received message", message);
         if (!seenMessages.current.has(message.messageId)) {
           seenMessages.current.add(message.messageId);
-          setMessages((prev) => [
-            ...prev,
-            `From ${senderId}: ${message.content} (original sender: ${message.nodeId})`,
-          ]);
+
+          switch (message.messageType) {
+            case "text":
+              setMessages((prev) => [
+                ...prev,
+                `From ${senderId}: ${message.content} (original sender: ${message.nodeId})`,
+              ]);
+              break;
+            case "new-block":
+              await handleReceivedBlock(message.block);
+              setMessages((prev) => [
+                ...prev,
+                `Received new block from ${senderId}`,
+              ]);
+              break;
+            case "blockchain":
+              await handleReceivedBlockchain(message.chain);
+              setMessages((prev) => [
+                ...prev,
+                `Received blockchain from ${senderId}`,
+              ]);
+              break;
+            default:
+              console.log("Unknown messageType", message.messageType);
+              break;
+          }
+
           handleBroadcastToAllButSome(message, [senderId, message.nodeId]);
         }
-
         break;
-      case "new-block":
-        await handleReceivedBlock(message.block);
-        break;
-
       case "new-transaction":
         try {
           handleReceivedTransaction(message.transaction);
@@ -121,11 +139,6 @@ export const Node: React.FC = () => {
           setMessages((prev) => [...prev, `Transaction error: ${error}`]);
         }
         break;
-
-      case "blockchain":
-        await handleReceivedBlockchain(message.chain);
-        break;
-
       default:
         break;
     }
@@ -133,9 +146,11 @@ export const Node: React.FC = () => {
 
   const broadcastBlock = (block: Block) => {
     const message = {
-      type: "new-block",
+      type: "message",
+      messageType: "new-block",
       block,
       nodeId,
+      messageId: window.crypto.randomUUID(),
     };
 
     dataChannels.current.forEach((channel) => {
@@ -154,9 +169,11 @@ export const Node: React.FC = () => {
 
   const onDataChannelOpen = (remoteNodeId: string, channel: RTCDataChannel) => {
     const blockchainMessage = {
-      type: "blockchain",
+      type: "message", // Changed from "blockchain" to "message"
+      messageType: "blockchain",
       chain: blockchain.chain,
       nodeId,
+      messageId: window.crypto.randomUUID(),
     };
     channel.send(JSON.stringify(blockchainMessage));
   };
