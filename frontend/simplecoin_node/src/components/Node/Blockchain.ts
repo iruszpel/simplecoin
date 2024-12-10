@@ -13,6 +13,8 @@ interface BlockchainState {
   getBalanceOfAddress: (address: string) => number;
   addBlock: (block: Block) => Promise<boolean>;
   replaceChain: (newChain: Block[]) => Promise<boolean>;
+  validateTransaction: (transaction: Transaction) => Promise<boolean>;
+  validateChain: (chain: Block[]) => Promise<boolean>;
 }
 
 const genesisBlock = new Block(0, 17321402820000, [], "0");
@@ -45,6 +47,7 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
       fromAddress: null,
       toAddress: miningRewardAddress,
       amount: miningReward,
+      nonce: crypto.randomUUID(),
     };
 
     const block = new Block(
@@ -63,7 +66,12 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
     }));
   },
 
-  createTransaction: (transaction: Transaction) => {
+  createTransaction: async (transaction: Transaction) => {
+    const isValid = await get().validateTransaction(transaction);
+    if (!isValid) {
+      throw new Error("Invalid transaction");
+    }
+
     set((state) => ({
       pendingTransactions: [...state.pendingTransactions, transaction],
     }));
@@ -89,39 +97,21 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
   },
 
   addBlock: async (block: Block): Promise<boolean> => {
-    const { chain, difficulty, getLatestBlock } = get();
+    const { chain, validateChain } = get();
+    const newChain = [...chain, block];
+    const isValid = await validateChain(newChain);
 
-    const latestBlock = getLatestBlock();
-    if (block.previousHash !== latestBlock.hash) {
-      console.error("Invalid previous hash");
-      return false;
-    }
-
-    if (block.index !== chain.length) {
-      console.error("Invalid block index");
-      return false;
-    }
-
-    const isValid = await block.isValid(difficulty);
     if (!isValid) {
-      console.error("Invalid block hash/proof of work");
+      console.error("New block is invalid");
       return false;
     }
 
-    set((state) => ({
-      chain: [...state.chain, block],
-      pendingTransactions: [],
-    }));
+    set({ chain: newChain, pendingTransactions: [] });
     return true;
   },
 
   replaceChain: async (newChain: Block[]): Promise<boolean> => {
-    const { chain, difficulty } = get();
-
-    console.log("Received chain with length", newChain.length);
-    console.log("Current chain length", chain.length);
-    console.log("newChain", newChain);
-    console.log("chain", chain);
+    const { chain, validateChain } = get();
 
     if (!newChain || newChain.length === 0) {
       console.error("Received empty chain");
@@ -133,23 +123,140 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
       return false;
     }
 
-    for (let i = 1; i < newChain.length; i++) {
-      const currentBlock = newChain[i];
-      const previousBlock = newChain[i - 1];
+    const isValid = await validateChain(newChain);
+    if (!isValid) {
+      console.error("Received chain is invalid");
+      return false;
+    }
 
+    set({ chain: newChain });
+    return true;
+  },
+
+  validateChain: async (chain: Block[]): Promise<boolean> => {
+    const { difficulty, validateTransaction } = get();
+
+    // Validate genesis block
+    const genesisBlock = chain[0];
+    if (
+      genesisBlock.hash !==
+      "0000000000000000000000000000000000000000000000000000000000000000"
+    ) {
+      console.error("Invalid genesis block");
+      return false;
+    }
+
+    // Validate each block in the chain
+    for (let i = 1; i < chain.length; i++) {
+      const currentBlock = chain[i];
+      const previousBlock = chain[i - 1];
+
+      // Check previous hash
       if (currentBlock.previousHash !== previousBlock.hash) {
-        console.error("Invalid previous hash at block", currentBlock.index);
+        console.error(`Invalid previous hash at block ${currentBlock.index}`);
         return false;
       }
 
-      const isValid = await currentBlock.isValid(difficulty);
-      if (!isValid) {
-        console.error("Invalid hash at block", currentBlock.index);
+      // Validate block's proof of work
+      const isValidBlock = await currentBlock.isValid(difficulty);
+      if (!isValidBlock) {
+        console.error(`Invalid proof of work at block ${currentBlock.index}`);
+        return false;
+      }
+
+      // Validate transactions within the block
+      for (const transaction of currentBlock.transactions) {
+        const isValidTransaction = await validateTransaction(transaction);
+        if (!isValidTransaction) {
+          console.error(
+            `Invalid transaction ${transaction.id} in block ${currentBlock.index}`
+          );
+          return false;
+        }
+      }
+    }
+
+    return true;
+  },
+
+  validateTransaction: async (transaction: Transaction): Promise<boolean> => {
+    // Skip validation for mining reward transactions
+    if (transaction.fromAddress === null) {
+      return true;
+    }
+
+    // Basic validation
+    if (
+      !transaction.fromAddress ||
+      !transaction.toAddress ||
+      transaction.amount <= 0
+    ) {
+      console.error("Invalid transaction structure");
+      return false;
+    }
+
+    // Check if transaction with this ID already exists in chain
+    const { chain, pendingTransactions } = get();
+    const isTransactionExists =
+      chain.some((block) =>
+        block.transactions.some((tx) => tx.id === transaction.id)
+      ) || pendingTransactions.some((tx) => tx.id === transaction.id);
+
+    if (isTransactionExists) {
+      console.error("Transaction already exists");
+      return false;
+    }
+
+    // Verify sender has enough balance (prevent double-spending)
+    const senderBalance = get().getBalanceOfAddress(transaction.fromAddress);
+
+    // Calculate pending outgoing amount
+    const pendingAmount = pendingTransactions
+      .filter((tx) => tx.fromAddress === transaction.fromAddress)
+      .reduce((sum, tx) => sum + tx.amount, 0);
+
+    if (senderBalance - pendingAmount < transaction.amount) {
+      console.error("Not enough balance");
+      return false;
+    }
+
+    // Verify signature if public key exists
+    if (transaction.signature && transaction.publicKey) {
+      try {
+        const msgBuffer = new TextEncoder().encode(
+          transaction.fromAddress +
+            transaction.toAddress +
+            transaction.amount +
+            transaction.nonce
+        );
+        const keyBuffer = new TextEncoder().encode(transaction.publicKey);
+        const signatureBuffer = new TextEncoder().encode(transaction.signature);
+
+        const cryptoKey = await crypto.subtle.importKey(
+          "raw",
+          keyBuffer,
+          { name: "ECDSA", namedCurve: "P-256" },
+          false,
+          ["verify"]
+        );
+
+        const isValid = await crypto.subtle.verify(
+          { name: "ECDSA", hash: "SHA-256" },
+          cryptoKey,
+          signatureBuffer,
+          msgBuffer
+        );
+
+        if (!isValid) {
+          console.error("Invalid signature");
+          return false;
+        }
+      } catch (error) {
+        console.error("Signature verification failed", error);
         return false;
       }
     }
 
-    set({ chain: newChain });
     return true;
   },
 }));

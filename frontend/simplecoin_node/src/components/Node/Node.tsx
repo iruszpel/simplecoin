@@ -16,6 +16,7 @@ export const Node: React.FC = () => {
   const [localSDP, setLocalSDP] = useState<string>("");
   const [remoteSDP, setRemoteSDP] = useState<string>("");
   const [messages, setMessages] = useState<string[]>([]);
+  const [rewardAddress, setRewardAddress] = useState<string>(nodeId);
   const seenMessages = useRef<Set<string>>(new Set());
 
   const blockchain = useBlockchainStore();
@@ -161,7 +162,7 @@ export const Node: React.FC = () => {
   };
 
   const handleMineTransactions = async () => {
-    await blockchain.minePendingTransactions(nodeId);
+    await blockchain.minePendingTransactions(rewardAddress);
 
     broadcastBlock(blockchain.getLatestBlock());
     setMessages((prev) => [...prev, "Mined new block"]);
@@ -214,6 +215,12 @@ export const Node: React.FC = () => {
     handleBroadcastMessage,
     handleBroadcastToAllButSome,
   } = useMessaging(nodeId, dataChannels, setMessages);
+
+  const handleExportBlockchain = () => {
+    const blockchainJSON = JSON.stringify(blockchain.chain, null, 2);
+    navigator.clipboard.writeText(blockchainJSON);
+    setMessages((prev) => [...prev, "Blockchain copied to clipboard"]);
+  };
 
   return (
     <div className="node">
@@ -288,7 +295,18 @@ export const Node: React.FC = () => {
 
       <div>
         <h2>Mine Pending Transactions</h2>
+        <Input
+          type="text"
+          placeholder="Reward Address"
+          value={rewardAddress}
+          onChange={(e) => setRewardAddress(e.target.value)}
+        />
         <Button onClick={handleMineTransactions}>Mine Transactions</Button>
+      </div>
+
+      <div>
+        <h2>Export Blockchain</h2>
+        <Button onClick={handleExportBlockchain}>Export to JSON</Button>
       </div>
     </div>
   );

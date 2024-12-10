@@ -4,6 +4,9 @@ export interface Transaction {
   fromAddress: string | null;
   toAddress: string;
   amount: number;
+  publicKey?: string;
+  nonce: string;
+  signature?: string;
 }
 
 export class Block {
