@@ -75,9 +75,11 @@ export const Node: React.FC = () => {
 
     const isValid = await blockchain.replaceChain(receivedChain);
     if (isValid) {
+      blockchain.clearPendingTransactions();
+
       setMessages((prev) => [
         ...prev,
-        `Blockchain updated with received chain`,
+        `Blockchain updated with received chain. Pending transactions cleared.`,
       ]);
     } else {
       setMessages((prev) => [...prev, `Received invalid blockchain`]);
@@ -126,6 +128,13 @@ export const Node: React.FC = () => {
                 `Received blockchain from ${senderId}`,
               ]);
               break;
+            case "new-transaction":
+              try {
+                handleReceivedTransaction(message.transaction);
+              } catch (error) {
+                setMessages((prev) => [...prev, `Transaction error: ${error}`]);
+              }
+              break;
             default:
               console.log("Unknown messageType", message.messageType);
               break;
@@ -134,13 +143,7 @@ export const Node: React.FC = () => {
           handleBroadcastToAllButSome(message, [senderId, message.nodeId]);
         }
         break;
-      case "new-transaction":
-        try {
-          handleReceivedTransaction(message.transaction);
-        } catch (error) {
-          setMessages((prev) => [...prev, `Transaction error: ${error}`]);
-        }
-        break;
+
       default:
         break;
     }
@@ -162,6 +165,22 @@ export const Node: React.FC = () => {
     });
   };
 
+  const broadcastTransaction = (transaction: Transaction) => {
+    const message = {
+      type: "message",
+      messageType: "new-transaction",
+      transaction,
+      nodeId,
+      messageId: window.crypto.randomUUID(),
+    };
+
+    dataChannels.current.forEach((channel) => {
+      if (channel.readyState === "open") {
+        channel.send(JSON.stringify(message));
+      }
+    });
+  };
+
   const handleMineTransactions = async () => {
     await blockchain.minePendingTransactions(rewardAddress);
 
@@ -171,7 +190,7 @@ export const Node: React.FC = () => {
 
   const onDataChannelOpen = (remoteNodeId: string, channel: RTCDataChannel) => {
     const blockchainMessage = {
-      type: "message", // Changed from "blockchain" to "message"
+      type: "message",
       messageType: "blockchain",
       chain: blockchain.chain,
       nodeId,
@@ -228,9 +247,11 @@ export const Node: React.FC = () => {
       const transactionData: Transaction = JSON.parse(transactionJson);
       await blockchain.createTransaction(transactionData);
 
+      broadcastTransaction(transactionData);
+
       setMessages((prev) => [
         ...prev,
-        `Transaction ${transactionData.id} added to pending transactions`,
+        `Transaction ${transactionData.id} added and broadcasted`,
       ]);
       setTransactionJson("");
     } catch (error) {

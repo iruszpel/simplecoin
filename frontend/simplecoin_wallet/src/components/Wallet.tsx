@@ -155,7 +155,6 @@ export function Wallet() {
   };
 
   const validateTransaction = async (tx: any) => {
-    // Coinbase transactions
     if (!tx.fromAddress) {
       return true;
     }
@@ -203,28 +202,28 @@ export function Wallet() {
     try {
       const parsed = JSON.parse(importChainJson);
       setChainData(parsed);
-      const { balance, transactions } = await computeBalanceAndTransactions(
-        parsed,
-        selectedKeyPair?.walletAddress
+
+      const updatedWalletDataArray = await Promise.all(
+        keyPairs.map(async (keyPair) => {
+          const { balance, transactions } = await computeBalanceAndTransactions(
+            parsed,
+            keyPair.walletAddress
+          );
+
+          return {
+            address: keyPair.walletAddress,
+            balance,
+            transactions: transactions.map((tx) => ({
+              ...tx,
+              from: tx.fromAddress,
+              to: tx.toAddress,
+              date: new Date(tx.timestamp).toISOString().split("T")[0],
+            })),
+          };
+        })
       );
 
-      const updatedWalletData = {
-        ...selectedWalletData,
-        balance,
-        transactions: transactions.map((tx) => ({
-          ...tx,
-          from: tx.fromAddress,
-          to: tx.toAddress,
-          date: new Date(tx.timestamp).toISOString().split("T")[0],
-        })),
-      };
-
-      setWalletDataArray((prev) => {
-        const updated = [...prev];
-        updated[selectedKeyPairIndex] = updatedWalletData;
-        return updated;
-      });
-
+      setWalletDataArray(updatedWalletDataArray);
       setImportChainJson("");
     } catch (error) {
       console.error("Invalid chain JSON", error);

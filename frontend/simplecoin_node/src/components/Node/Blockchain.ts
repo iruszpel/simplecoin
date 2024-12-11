@@ -14,6 +14,7 @@ interface BlockchainState {
   getBalanceOfAddress: (address: string, chain: Block[]) => number;
   addBlock: (block: Block) => Promise<boolean>;
   replaceChain: (newChain: Block[]) => Promise<boolean>;
+  clearPendingTransactions: () => void;
   validateTransaction: (
     transaction: Transaction,
     chain?: Block[],
@@ -138,6 +139,10 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
 
     set({ chain: newChain });
     return true;
+  },
+
+  clearPendingTransactions: () => {
+    set({ pendingTransactions: [] });
   },
 
   validateChain: async (chain: Block[]): Promise<boolean> => {
