@@ -11,10 +11,14 @@ interface BlockchainState {
   getLatestBlock: () => Block;
   minePendingTransactions: (miningRewardAddress: string) => Promise<void>;
   createTransaction: (transaction: Transaction) => Promise<void>;
-  getBalanceOfAddress: (address: string) => number;
+  getBalanceOfAddress: (address: string, chain: Block[]) => number;
   addBlock: (block: Block) => Promise<boolean>;
   replaceChain: (newChain: Block[]) => Promise<boolean>;
-  validateTransaction: (transaction: Transaction) => Promise<boolean>;
+  validateTransaction: (
+    transaction: Transaction,
+    chain?: Block[],
+    pendingTransactions?: Transaction[]
+  ) => Promise<boolean>;
   validateChain: (chain: Block[]) => Promise<boolean>;
 }
 
@@ -78,8 +82,10 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
     }));
   },
 
-  getBalanceOfAddress: (address: string) => {
-    const { chain } = get();
+  getBalanceOfAddress: (
+    address: string,
+    chain: Block[] = get().chain
+  ): number => {
     let balance = 0;
 
     for (const block of chain) {
@@ -137,7 +143,6 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
   validateChain: async (chain: Block[]): Promise<boolean> => {
     const { difficulty, validateTransaction } = get();
 
-    // Validate genesis block
     const genesisBlock = chain[0];
     if (
       genesisBlock.hash !==
@@ -147,27 +152,29 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
       return false;
     }
 
-    // Validate each block in the chain
     for (let i = 1; i < chain.length; i++) {
       const currentBlock = chain[i];
       const previousBlock = chain[i - 1];
 
-      // Check previous hash
       if (currentBlock.previousHash !== previousBlock.hash) {
         console.error(`Invalid previous hash at block ${currentBlock.index}`);
         return false;
       }
 
-      // Validate block's proof of work
       const isValidBlock = await currentBlock.isValid(difficulty);
       if (!isValidBlock) {
         console.error(`Invalid proof of work at block ${currentBlock.index}`);
         return false;
       }
 
-      // Validate transactions within the block
+      const chainUpToPrevious = chain.slice(0, i);
+
       for (const transaction of currentBlock.transactions) {
-        const isValidTransaction = await validateTransaction(transaction);
+        const isValidTransaction = await validateTransaction(
+          transaction,
+          chainUpToPrevious,
+          []
+        );
         if (!isValidTransaction) {
           console.error(
             `Invalid transaction ${transaction.id} in block ${currentBlock.index}`
@@ -176,7 +183,6 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
         }
       }
 
-      // Validate if only one coinbase transaction exists
       const coinbaseTransactions = currentBlock.transactions.filter(
         (tx) => tx.fromAddress === null
       );
@@ -190,14 +196,20 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
     return true;
   },
 
-  validateTransaction: async (transaction: Transaction): Promise<boolean> => {
+  validateTransaction: async (
+    transaction: Transaction,
+    chain: Block[] = get().chain,
+    pendingTransactions: Transaction[] = get().pendingTransactions
+  ): Promise<boolean> => {
+    const { miningReward } = get();
+
     if (transaction.fromAddress === null) {
       if (transaction.toAddress === null) {
         console.error("Invalid coinbase transaction");
         return false;
       }
 
-      if (transaction.amount !== get().miningReward) {
+      if (transaction.amount !== miningReward) {
         console.error("Invalid mining reward amount");
         return false;
       }
@@ -205,7 +217,6 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
       return true;
     }
 
-    // Basic validation
     if (
       !transaction.fromAddress ||
       !transaction.toAddress ||
@@ -231,8 +242,6 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
       return false;
     }
 
-    // Check if transaction with this ID already exists in chain
-    const { chain, pendingTransactions } = get();
     const isTransactionExists =
       chain.some((block) =>
         block.transactions.some((tx) => tx.id === transaction.id)
@@ -243,11 +252,11 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
       return false;
     }
 
-    // Verify sender has enough balance (prevent double-spending)
-    const senderBalance = get().getBalanceOfAddress(transaction.fromAddress);
-    console.log("Sender balance", senderBalance);
+    const senderBalance = get().getBalanceOfAddress(
+      transaction.fromAddress,
+      chain
+    );
 
-    // Calculate pending outgoing amount
     const pendingAmount = pendingTransactions
       .filter((tx) => tx.fromAddress === transaction.fromAddress)
       .reduce((sum, tx) => sum + tx.amount, 0);
@@ -257,7 +266,6 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
       return false;
     }
 
-    // Verify signature if public key exists
     if (transaction.signature && transaction.publicKey) {
       try {
         const msgBuffer = new TextEncoder().encode(
