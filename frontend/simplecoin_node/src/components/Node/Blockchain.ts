@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { Block, Transaction } from "./Block";
+import { base64ToArrayBuffer, generateWalletAddress } from "./utils";
 
 interface BlockchainState {
   chain: Block[];
@@ -9,7 +10,7 @@ interface BlockchainState {
   miningReward: number;
   getLatestBlock: () => Block;
   minePendingTransactions: (miningRewardAddress: string) => Promise<void>;
-  createTransaction: (transaction: Transaction) => void;
+  createTransaction: (transaction: Transaction) => Promise<void>;
   getBalanceOfAddress: (address: string) => number;
   addBlock: (block: Block) => Promise<boolean>;
   replaceChain: (newChain: Block[]) => Promise<boolean>;
@@ -174,14 +175,33 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
           return false;
         }
       }
+
+      // Validate if only one coinbase transaction exists
+      const coinbaseTransactions = currentBlock.transactions.filter(
+        (tx) => tx.fromAddress === null
+      );
+
+      if (coinbaseTransactions.length !== 1) {
+        console.error("Invalid coinbase transaction");
+        return false;
+      }
     }
 
     return true;
   },
 
   validateTransaction: async (transaction: Transaction): Promise<boolean> => {
-    // Skip validation for mining reward transactions
     if (transaction.fromAddress === null) {
+      if (transaction.toAddress === null) {
+        console.error("Invalid coinbase transaction");
+        return false;
+      }
+
+      if (transaction.amount !== get().miningReward) {
+        console.error("Invalid mining reward amount");
+        return false;
+      }
+
       return true;
     }
 
@@ -192,6 +212,22 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
       transaction.amount <= 0
     ) {
       console.error("Invalid transaction structure");
+      return false;
+    }
+
+    if (!transaction.publicKey) {
+      console.error("Public key is missing");
+      return false;
+    }
+
+    const generatedAddress = await generateWalletAddress(transaction.publicKey);
+    if (generatedAddress !== transaction.fromAddress) {
+      console.error("Public key does not match fromAddress");
+      return false;
+    }
+
+    if (transaction.timestamp > Date.now()) {
+      console.error("Invalid timestamp");
       return false;
     }
 
@@ -209,6 +245,7 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
 
     // Verify sender has enough balance (prevent double-spending)
     const senderBalance = get().getBalanceOfAddress(transaction.fromAddress);
+    console.log("Sender balance", senderBalance);
 
     // Calculate pending outgoing amount
     const pendingAmount = pendingTransactions
@@ -224,13 +261,15 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
     if (transaction.signature && transaction.publicKey) {
       try {
         const msgBuffer = new TextEncoder().encode(
-          transaction.fromAddress +
+          transaction.id +
+            transaction.timestamp +
+            transaction.fromAddress +
             transaction.toAddress +
-            transaction.amount +
-            transaction.nonce
+            transaction.nonce +
+            transaction.amount
         );
-        const keyBuffer = new TextEncoder().encode(transaction.publicKey);
-        const signatureBuffer = new TextEncoder().encode(transaction.signature);
+        const keyBuffer = base64ToArrayBuffer(transaction.publicKey);
+        const signatureBuffer = base64ToArrayBuffer(transaction.signature);
 
         const cryptoKey = await crypto.subtle.importKey(
           "raw",

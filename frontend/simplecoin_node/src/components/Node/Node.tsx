@@ -17,6 +17,7 @@ export const Node: React.FC = () => {
   const [remoteSDP, setRemoteSDP] = useState<string>("");
   const [messages, setMessages] = useState<string[]>([]);
   const [rewardAddress, setRewardAddress] = useState<string>(nodeId);
+  const [transactionJson, setTransactionJson] = useState<string>("");
   const seenMessages = useRef<Set<string>>(new Set());
 
   const blockchain = useBlockchainStore();
@@ -222,6 +223,21 @@ export const Node: React.FC = () => {
     setMessages((prev) => [...prev, "Blockchain copied to clipboard"]);
   };
 
+  const handleAddTransactionFromJson = async () => {
+    try {
+      const transactionData: Transaction = JSON.parse(transactionJson);
+      await blockchain.createTransaction(transactionData);
+
+      setMessages((prev) => [
+        ...prev,
+        `Transaction ${transactionData.id} added to pending transactions`,
+      ]);
+      setTransactionJson("");
+    } catch (error) {
+      setMessages((prev) => [...prev, `Failed to add transaction: ${error}`]);
+    }
+  };
+
   return (
     <div className="node">
       <h1>Node ID: {nodeId}</h1>
@@ -307,6 +323,18 @@ export const Node: React.FC = () => {
       <div>
         <h2>Export Blockchain</h2>
         <Button onClick={handleExportBlockchain}>Export to JSON</Button>
+      </div>
+
+      <div>
+        <h2>Paste Transaction JSON</h2>
+        <Textarea
+          placeholder="Paste transaction JSON here"
+          value={transactionJson}
+          onChange={(e) => setTransactionJson(e.target.value)}
+          rows={10}
+          cols={60}
+        />
+        <Button onClick={handleAddTransactionFromJson}>Add Transaction</Button>
       </div>
     </div>
   );

@@ -184,7 +184,6 @@ export async function signTransaction(
     transaction.timestamp +
     transaction.fromAddress +
     transaction.toAddress +
-    transaction.publicKey +
     transaction.nonce +
     transaction.amount;
 
@@ -216,7 +215,6 @@ export async function verifySignature(
     transaction.timestamp +
     transaction.fromAddress +
     transaction.toAddress +
-    transaction.publicKey +
     transaction.nonce +
     transaction.amount;
 
