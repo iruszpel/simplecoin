@@ -16,6 +16,8 @@ export const Node: React.FC = () => {
   const [localSDP, setLocalSDP] = useState<string>("");
   const [remoteSDP, setRemoteSDP] = useState<string>("");
   const [messages, setMessages] = useState<string[]>([]);
+  const [rewardAddress, setRewardAddress] = useState<string>(nodeId);
+  const [transactionJson, setTransactionJson] = useState<string>("");
   const seenMessages = useRef<Set<string>>(new Set());
 
   const blockchain = useBlockchainStore();
@@ -73,9 +75,11 @@ export const Node: React.FC = () => {
 
     const isValid = await blockchain.replaceChain(receivedChain);
     if (isValid) {
+      blockchain.clearPendingTransactions();
+
       setMessages((prev) => [
         ...prev,
-        `Blockchain updated with received chain`,
+        `Blockchain updated with received chain. Pending transactions cleared.`,
       ]);
     } else {
       setMessages((prev) => [...prev, `Received invalid blockchain`]);
@@ -124,6 +128,13 @@ export const Node: React.FC = () => {
                 `Received blockchain from ${senderId}`,
               ]);
               break;
+            case "new-transaction":
+              try {
+                handleReceivedTransaction(message.transaction);
+              } catch (error) {
+                setMessages((prev) => [...prev, `Transaction error: ${error}`]);
+              }
+              break;
             default:
               console.log("Unknown messageType", message.messageType);
               break;
@@ -132,13 +143,7 @@ export const Node: React.FC = () => {
           handleBroadcastToAllButSome(message, [senderId, message.nodeId]);
         }
         break;
-      case "new-transaction":
-        try {
-          handleReceivedTransaction(message.transaction);
-        } catch (error) {
-          setMessages((prev) => [...prev, `Transaction error: ${error}`]);
-        }
-        break;
+
       default:
         break;
     }
@@ -160,8 +165,24 @@ export const Node: React.FC = () => {
     });
   };
 
+  const broadcastTransaction = (transaction: Transaction) => {
+    const message = {
+      type: "message",
+      messageType: "new-transaction",
+      transaction,
+      nodeId,
+      messageId: window.crypto.randomUUID(),
+    };
+
+    dataChannels.current.forEach((channel) => {
+      if (channel.readyState === "open") {
+        channel.send(JSON.stringify(message));
+      }
+    });
+  };
+
   const handleMineTransactions = async () => {
-    await blockchain.minePendingTransactions(nodeId);
+    await blockchain.minePendingTransactions(rewardAddress);
 
     broadcastBlock(blockchain.getLatestBlock());
     setMessages((prev) => [...prev, "Mined new block"]);
@@ -169,7 +190,7 @@ export const Node: React.FC = () => {
 
   const onDataChannelOpen = (remoteNodeId: string, channel: RTCDataChannel) => {
     const blockchainMessage = {
-      type: "message", // Changed from "blockchain" to "message"
+      type: "message",
       messageType: "blockchain",
       chain: blockchain.chain,
       nodeId,
@@ -214,6 +235,29 @@ export const Node: React.FC = () => {
     handleBroadcastMessage,
     handleBroadcastToAllButSome,
   } = useMessaging(nodeId, dataChannels, setMessages);
+
+  const handleExportBlockchain = () => {
+    const blockchainJSON = JSON.stringify(blockchain.chain, null, 2);
+    navigator.clipboard.writeText(blockchainJSON);
+    setMessages((prev) => [...prev, "Blockchain copied to clipboard"]);
+  };
+
+  const handleAddTransactionFromJson = async () => {
+    try {
+      const transactionData: Transaction = JSON.parse(transactionJson);
+      await blockchain.createTransaction(transactionData);
+
+      broadcastTransaction(transactionData);
+
+      setMessages((prev) => [
+        ...prev,
+        `Transaction ${transactionData.id} added and broadcasted`,
+      ]);
+      setTransactionJson("");
+    } catch (error) {
+      setMessages((prev) => [...prev, `Failed to add transaction: ${error}`]);
+    }
+  };
 
   return (
     <div className="node">
@@ -288,7 +332,30 @@ export const Node: React.FC = () => {
 
       <div>
         <h2>Mine Pending Transactions</h2>
+        <Input
+          type="text"
+          placeholder="Reward Address"
+          value={rewardAddress}
+          onChange={(e) => setRewardAddress(e.target.value)}
+        />
         <Button onClick={handleMineTransactions}>Mine Transactions</Button>
+      </div>
+
+      <div>
+        <h2>Export Blockchain</h2>
+        <Button onClick={handleExportBlockchain}>Export to JSON</Button>
+      </div>
+
+      <div>
+        <h2>Paste Transaction JSON</h2>
+        <Textarea
+          placeholder="Paste transaction JSON here"
+          value={transactionJson}
+          onChange={(e) => setTransactionJson(e.target.value)}
+          rows={10}
+          cols={60}
+        />
+        <Button onClick={handleAddTransactionFromJson}>Add Transaction</Button>
       </div>
     </div>
   );

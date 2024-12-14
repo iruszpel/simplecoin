@@ -1,3 +1,5 @@
+import { Transaction } from "@/components/Wallet";
+
 const SALT = "supersóldfhsahfidoaghfia98263495";
 
 export async function generateKeyPair(): Promise<{
@@ -139,4 +141,96 @@ export async function generateWalletAddress(
   const walletAddress = "0x" + addressHex.slice(-40);
 
   return walletAddress;
+}
+
+async function importPrivateKey(privateKeyBase64: string): Promise<CryptoKey> {
+  const privateKeyArrayBuffer = base64ToArrayBuffer(privateKeyBase64);
+  const privateKey = await window.crypto.subtle.importKey(
+    "pkcs8",
+    privateKeyArrayBuffer,
+    {
+      name: "ECDSA",
+      namedCurve: "P-256",
+    },
+    false,
+    ["sign"]
+  );
+  return privateKey;
+}
+
+async function importPublicKey(publicKeyBase64: string): Promise<CryptoKey> {
+  const publicKeyArrayBuffer = base64ToArrayBuffer(publicKeyBase64);
+  const publicKey = await window.crypto.subtle.importKey(
+    "raw",
+    publicKeyArrayBuffer,
+    {
+      name: "ECDSA",
+      namedCurve: "P-256",
+    },
+    false,
+    ["verify"]
+  );
+  return publicKey;
+}
+
+export async function signTransaction(
+  transaction: Transaction,
+  privateKeyBase64: string
+): Promise<string> {
+  const privateKey = await importPrivateKey(privateKeyBase64);
+
+  const data =
+    transaction.id +
+    transaction.timestamp +
+    transaction.fromAddress +
+    transaction.toAddress +
+    transaction.nonce +
+    transaction.amount;
+
+  const encoder = new TextEncoder();
+  const dataBuffer = encoder.encode(data);
+
+  const signatureBuffer = await window.crypto.subtle.sign(
+    {
+      name: "ECDSA",
+      hash: { name: "SHA-256" },
+    },
+    privateKey,
+    dataBuffer
+  );
+
+  const signatureBase64 = arrayBufferToBase64(signatureBuffer);
+
+  return signatureBase64;
+}
+
+export async function verifySignature(
+  transaction: Transaction,
+  signatureBase64: string
+): Promise<boolean> {
+  const publicKey = await importPublicKey(transaction.publicKey);
+
+  const data =
+    transaction.id +
+    transaction.timestamp +
+    transaction.fromAddress +
+    transaction.toAddress +
+    transaction.nonce +
+    transaction.amount;
+
+  const encoder = new TextEncoder();
+  const dataBuffer = encoder.encode(data);
+  const signatureBuffer = base64ToArrayBuffer(signatureBase64);
+
+  const isValid = await window.crypto.subtle.verify(
+    {
+      name: "ECDSA",
+      hash: { name: "SHA-256" },
+    },
+    publicKey,
+    signatureBuffer,
+    dataBuffer
+  );
+
+  return isValid;
 }

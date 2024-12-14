@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { useState, useEffect } from "react";
 import {
@@ -31,6 +32,8 @@ import {
   encryptPrivateKey,
   decryptPrivateKey,
   generateWalletAddress,
+  signTransaction,
+  verifySignature,
 } from "../utils/crypto";
 import {
   Select,
@@ -40,39 +43,40 @@ import {
   SelectValue,
 } from "./ui/select";
 
-const walletDataArray = [
+const walletDataArrayMock: {
+  address: string;
+  balance: number;
+  transactions: {
+    id: string;
+    type: string;
+    amount: number;
+    from?: string;
+    to?: string;
+    date: string;
+    isValid: boolean;
+  }[];
+}[] = [
   {
-    address: "0xAddress1",
-    balance: 1250.75,
-    transactions: [
-      {
-        id: 1,
-        type: "Received",
-        amount: 100,
-        from: "0xMOCK",
-        to: "0xAddress1",
-        date: "2024-01-07",
-      },
-    ],
-  },
-  {
-    address: "0xAddress2",
-    balance: 500.25,
-    transactions: [
-      {
-        id: 5,
-        type: "Sent",
-        amount: 50,
-        to: "0xMOCK",
-        from: "0xAddress2",
-        date: "2024-01-03",
-      },
-    ],
+    address: "",
+    balance: 0,
+    transactions: [],
   },
 ];
 
+export type Transaction = {
+  id: string;
+  timestamp: number;
+  fromAddress: string;
+  toAddress: string;
+  amount: number;
+  nonce: string;
+  signature?: string;
+  publicKey: string;
+};
+
 export function Wallet() {
   const [password, setPassword] = useState("");
+  const [walletDataArray, setWalletDataArray] = useState(walletDataArrayMock);
   const [keyPairs, setKeyPairs] = useState<
     Array<{
       publicKey: string;
@@ -84,6 +88,12 @@ export function Wallet() {
   const [selectedKeyPairIndex, setSelectedKeyPairIndex] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [showPrivateKey, setShowPrivateKey] = useState(false);
+  const [importChainJson, setImportChainJson] = useState("");
+  const [chainData, setChainData] = useState([]); // przechowujemy zaimportowany łańcuch
+
+  const [recipient, setRecipient] = useState("");
+  const [amount, setAmount] = useState("");
+  const [transactionJson, setTransactionJson] = useState("");
 
   const selectedKeyPair =
     keyPairs && keyPairs.length > 0 ? keyPairs[selectedKeyPairIndex] : null;
@@ -144,8 +154,106 @@ export function Wallet() {
     }
   };
 
+  const validateTransaction = async (tx: any) => {
+    if (!tx.fromAddress) {
+      return true;
+    }
+
+    if (!tx.signature || !tx.publicKey) {
+      return false;
+    }
+
+    try {
+      return await verifySignature(tx, tx.signature);
+    } catch (error) {
+      console.error("Transaction validation failed:", error);
+      return false;
+    }
+  };
+
+  const computeBalanceAndTransactions = async (
+    chain: { transactions: Transaction[] }[],
+    address: string | undefined
+  ) => {
+    let balance = 0;
+    const transactions = [];
+
+    for (const block of chain) {
+      for (const tx of block.transactions) {
+        const isValid = await validateTransaction(tx);
+
+        if (tx.toAddress === address) {
+          balance += tx.amount;
+          transactions.push({ ...tx, type: "Received", isValid });
+        }
+        if (tx.fromAddress === address) {
+          balance -= tx.amount;
+          transactions.push({ ...tx, type: "Sent", isValid });
+        }
+      }
+    }
+    return { balance, transactions };
+  };
+
   const selectedWalletData =
     walletDataArray[selectedKeyPairIndex] || walletDataArray[0];
+
+  const handleImportChain = async () => {
+    try {
+      const parsed = JSON.parse(importChainJson);
+      setChainData(parsed);
+
+      const updatedWalletDataArray = await Promise.all(
+        keyPairs.map(async (keyPair) => {
+          const { balance, transactions } = await computeBalanceAndTransactions(
+            parsed,
+            keyPair.walletAddress
+          );
+
+          return {
+            address: keyPair.walletAddress,
+            balance,
+            transactions: transactions.map((tx) => ({
+              ...tx,
+              from: tx.fromAddress,
+              to: tx.toAddress,
+              date: new Date(tx.timestamp).toISOString().split("T")[0],
+            })),
+          };
+        })
+      );
+
+      setWalletDataArray(updatedWalletDataArray);
+      setImportChainJson("");
+    } catch (error) {
+      console.error("Invalid chain JSON", error);
+    }
+  };
+
+  const handleGenerateTransactionJson = async () => {
+    if (!selectedKeyPair?.decryptedPrivateKey) {
+      setError("Please decrypt your private key first.");
+      return;
+    }
+
+    const tx: Transaction = {
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+      fromAddress: selectedKeyPair.walletAddress,
+      toAddress: recipient,
+      amount: parseFloat(amount),
+      nonce: crypto.randomUUID(),
+      publicKey: selectedKeyPair.publicKey,
+    };
+
+    const signature = await signTransaction(
+      tx,
+      selectedKeyPair.decryptedPrivateKey
+    );
+    tx.signature = signature;
+
+    setTransactionJson(JSON.stringify(tx, null, 2));
+  };
 
   return (
     <div className="flex flex-col w-full min-h-screen">
@@ -226,11 +334,29 @@ export function Wallet() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <form className="grid gap-2">
-                  <Input placeholder="Recipient Address" />
-                  <Input type="number" placeholder="Amount" />
-                  <Button className="w-full">Send</Button>
-                </form>
+                <div className="grid gap-2">
+                  <Input
+                    placeholder="Recipient Address"
+                    onChange={(e) => setRecipient(e.target.value)}
+                  />
+                  <Input
+                    type="number"
+                    placeholder="Amount"
+                    onChange={(e) => setAmount(e.target.value)}
+                  />
+                  <Button
+                    className="w-full"
+                    onClick={handleGenerateTransactionJson}
+                  >
+                    Send
+                  </Button>
+                </div>
+                {transactionJson && (
+                  <div>
+                    <Label>Signed Transaction JSON</Label>
+                    <Textarea value={transactionJson} readOnly />
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -336,6 +462,7 @@ export function Wallet() {
                     <TableHead>Amount</TableHead>
                     <TableHead>From/To</TableHead>
                     <TableHead>Date</TableHead>
+                    <TableHead>Valid</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -354,6 +481,17 @@ export function Wallet() {
                         {transaction.from || transaction.to}
                       </TableCell>
                       <TableCell>{transaction.date}</TableCell>
+                      <TableCell>
+                        {transaction.from ? (
+                          transaction.isValid ? (
+                            <span className="text-green-500">✓</span>
+                          ) : (
+                            <span className="text-red-500">✗</span>
+                          )
+                        ) : (
+                          <span className="text-gray-500">Coinbase</span>
+                        )}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -361,6 +499,15 @@ export function Wallet() {
             </CardContent>
           </Card>
         )}
+        <div>
+          <h2>Import Blockchain</h2>
+          <Textarea
+            placeholder="Wklej tutaj JSON łańcucha"
+            value={importChainJson}
+            onChange={(e) => setImportChainJson(e.target.value)}
+          />
+          <Button onClick={handleImportChain}>Zaimportuj łańcuch</Button>
+        </div>
       </main>
     </div>
   );
