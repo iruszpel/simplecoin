@@ -2,12 +2,16 @@ import { create } from "zustand";
 import { Block, Transaction } from "./Block";
 import { base64ToArrayBuffer, generateWalletAddress } from "./utils";
 
-interface BlockchainState {
+export interface BlockchainState {
   chain: Block[];
   difficulty: number;
   pendingTransactions: Transaction[];
   isMining: boolean;
   miningReward: number;
+  disableValidation: boolean;
+  setDisableValidation: (disableValidation: boolean) => void;
+  isValidationDisabled: () => boolean;
+  getBlockchain: () => Block[];
   getLatestBlock: () => Block;
   minePendingTransactions: (miningRewardAddress: string) => Promise<void>;
   createTransaction: (transaction: Transaction) => Promise<void>;
@@ -33,6 +37,19 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
   pendingTransactions: [],
   miningReward: 50,
   isMining: false,
+  disableValidation: false,
+
+  setDisableValidation: (disableValidation: boolean) => {
+    set({ disableValidation });
+  },
+
+  isValidationDisabled: () => {
+    return get().disableValidation;
+  },
+
+  getBlockchain: () => {
+    return get().chain;
+  },
 
   getLatestBlock: () => {
     const { chain } = get();
@@ -119,7 +136,13 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
   },
 
   replaceChain: async (newChain: Block[]): Promise<boolean> => {
-    const { chain, validateChain } = get();
+    const { chain, validateChain, disableValidation } = get();
+    console.log("Replacing chain", newChain);
+
+    if (disableValidation) {
+      set({ chain: newChain });
+      return true;
+    }
 
     if (!newChain || newChain.length === 0) {
       console.error("Received empty chain");
@@ -146,7 +169,11 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
   },
 
   validateChain: async (chain: Block[]): Promise<boolean> => {
-    const { difficulty, validateTransaction } = get();
+    const { difficulty, validateTransaction, disableValidation } = get();
+
+    if (disableValidation) {
+      return true;
+    }
 
     const genesisBlock = chain[0];
     if (
@@ -206,7 +233,11 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
     chain: Block[] = get().chain,
     pendingTransactions: Transaction[] = get().pendingTransactions
   ): Promise<boolean> => {
-    const { miningReward } = get();
+    const { miningReward, disableValidation } = get();
+
+    if (disableValidation) {
+      return true;
+    }
 
     if (transaction.fromAddress === null) {
       if (transaction.toAddress === null) {
