@@ -183,16 +183,20 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
 
   addBlock: async (block: Block): Promise<boolean> => {
     const { chain, validateChain, forks } = get();
+    console.log("Attempting to add block:", block);
 
     if (block.previousHash === chain[chain.length - 1].hash) {
+      console.log("Block is a direct extension of the main chain.");
       const newChain = [...chain, block];
       const isValid = await validateChain(newChain);
 
       if (isValid) {
         set({ chain: newChain });
+        console.log("Block added to the main chain.");
         return true;
       } else {
         get().recycleTransactions(block);
+        console.log("Block is invalid. Transactions recycled.");
         return false;
       }
     }
@@ -200,6 +204,7 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
     for (let i = 0; i < forks.length; i++) {
       const fork = forks[i];
       if (block.previousHash === fork[fork.length - 1].hash) {
+        console.log(`Block is a direct extension of fork ${i}.`);
         const newFork = [...fork, block];
         const isValid = await validateChain(newFork);
 
@@ -207,13 +212,16 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
           set((state) => ({
             forks: state.forks.map((f, idx) => (idx === i ? newFork : f)),
           }));
+          console.log(`Block added to fork ${i}.`);
 
           if (newFork.length > chain.length) {
             get().switchToFork(i);
+            console.log(`Switched to fork ${i} as the main chain.`);
           }
           return true;
         } else {
           get().recycleTransactions(block);
+          console.log(`Block is invalid in fork ${i}. Transactions recycled.`);
           return false;
         }
       }
@@ -222,19 +230,25 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
     const parentBlock = chain.find((b) => b.hash === block.previousHash);
     if (parentBlock) {
       const parentIndex = chain.indexOf(parentBlock);
+      console.log("Block is creating a new fork.");
       const newFork = [...chain.slice(0, parentIndex + 1), block];
       const isValid = await validateChain(newFork);
 
       if (isValid) {
         get().addFork(newFork);
+        console.log("New fork created and block added.");
         return true;
       } else {
         get().recycleTransactions(block);
+        console.log("Block is invalid in new fork. Transactions recycled.");
         return false;
       }
     }
 
     get().recycleTransactions(block);
+    console.log(
+      "Block is invalid and does not fit anywhere. Transactions recycled."
+    );
     return false;
   },
 
