@@ -22,50 +22,9 @@ export const Node: React.FC = () => {
   const seenMessages = useRef<Set<string>>(new Set());
   const maliciousNode = useMaliciousNodeStore();
 
-  /**
-   * Key = block.previousHash, Value = array of blocks that depend on that hash.
-   * Jeśli uda się dodać blok, to sprawdzamy czy kolejne bloki może teraz można dodać.
-   */
-  const orphanBlocksRef = useRef<Map<string, Block[]>>(new Map());
-
   const blockchain = useBlockchainStore();
   const currentBlock = blockchain.getLatestBlock();
   const isMining = blockchain.isMining;
-
-  const hasBlockHash = (hash: string): boolean => {
-    return blockchain.chain.some((b) => b.hash === hash);
-  };
-
-  const tryAttachOrphans = async () => {
-    let attachedSomething = true;
-
-    while (attachedSomething) {
-      attachedSomething = false;
-
-      orphanBlocksRef.current.forEach(async (blocksWaiting, parentHash) => {
-        if (hasBlockHash(parentHash)) {
-          const blocksToAttach = [...blocksWaiting];
-          orphanBlocksRef.current.delete(parentHash);
-
-          for (const orphanBlock of blocksToAttach) {
-            const success = await blockchain.addBlock(orphanBlock);
-            if (success) {
-              setMessages((prev) => [
-                ...prev,
-                `Attached orphan block ${orphanBlock.index}`,
-              ]);
-              attachedSomething = true;
-            } else {
-              setMessages((prev) => [
-                ...prev,
-                `Could not attach orphan block ${orphanBlock.index}`,
-              ]);
-            }
-          }
-        }
-      });
-    }
-  };
 
   const handleReceivedBlock = async (blockData: any) => {
     const newBlock = new Block(
@@ -78,52 +37,29 @@ export const Node: React.FC = () => {
     newBlock.nonce = blockData.nonce;
 
     try {
-      const latestBlock = blockchain.getLatestBlock();
-      if (newBlock.previousHash !== latestBlock.hash) {
-        if (!hasBlockHash(newBlock.previousHash)) {
-          const existingOrphans = orphanBlocksRef.current.get(
-            newBlock.previousHash
-          );
-          if (existingOrphans) {
-            existingOrphans.push(newBlock);
-          } else {
-            orphanBlocksRef.current.set(newBlock.previousHash, [newBlock]);
-          }
-          setMessages((prev) => [
-            ...prev,
-            `Received orphan block ${newBlock.index}, waiting on ${newBlock.previousHash}`,
-          ]);
-
-          handleBroadcastToAllButSome(
-            {
-              type: "message",
-              messageType: "request-blockchain",
-              nodeId,
-              messageId: window.crypto.randomUUID(),
-            },
-            []
-          );
-          setMessages((prev) => [
-            ...prev,
-            `Requested blockchain from all nodes because of orphan block`,
-          ]);
-          return;
-        }
-      }
-
       const success = await blockchain.addBlock(newBlock);
+
       if (success) {
         setMessages((prev) => [
           ...prev,
           `Received valid block ${newBlock.index} and added to chain`,
         ]);
-
-        await tryAttachOrphans();
       } else {
         setMessages((prev) => [
           ...prev,
           `Received invalid block ${newBlock.index} (could not add)`,
+          `Requesting blockchain from peers...`,
         ]);
+
+        handleBroadcastToAllButSome(
+          {
+            type: "message",
+            messageType: "request-blockchain",
+            nodeId,
+            messageId: window.crypto.randomUUID(),
+          },
+          []
+        );
       }
     } catch (error) {
       setMessages((prev) => [...prev, `Block error: ${error}`]);
@@ -159,8 +95,6 @@ export const Node: React.FC = () => {
         ...prev,
         `Blockchain updated with received chain. Pending transactions cleared.`,
       ]);
-
-      await tryAttachOrphans();
     } else {
       setMessages((prev) => [...prev, `Received invalid blockchain`]);
     }
@@ -171,7 +105,6 @@ export const Node: React.FC = () => {
 
     switch (message.type) {
       case "peer-list": {
-        // ...
         const newPeers = message.peers.filter(
           (id: string) => id !== nodeId && !knownPeers.has(id)
         );
@@ -223,20 +156,11 @@ export const Node: React.FC = () => {
               break;
 
             case "request-blockchain":
-              // The sender is requesting our chain; send it back
               setMessages((prev) => [
                 ...prev,
                 `Received blockchain request from ${senderId}`,
               ]);
               dataChannels.current.forEach((channel, peerId) => {
-                console.log(
-                  "Checking channel",
-                  peerId,
-                  "for",
-                  senderId,
-                  "channel state",
-                  channel.readyState
-                );
                 if (peerId === senderId && channel.readyState === "open") {
                   const blockchainMessage = {
                     type: "message",
@@ -245,14 +169,6 @@ export const Node: React.FC = () => {
                     nodeId,
                     messageId: window.crypto.randomUUID(),
                   };
-                  console.log(
-                    "Current chain length",
-                    blockchain.getBlockchain().length,
-                    "Sending to",
-                    senderId,
-                    "Full blockchain:",
-                    blockchain.getBlockchain()
-                  );
                   setMessages((prev) => [
                     ...prev,
                     `Sending blockchain to ${senderId} because they requested it`,
@@ -488,6 +404,7 @@ export const Node: React.FC = () => {
         />
         <Button onClick={handleAddTransactionFromJson}>Add Transaction</Button>
       </div>
+
       <div>
         <h2>Malicious Node Testing</h2>
         <div>
@@ -541,10 +458,8 @@ export const Node: React.FC = () => {
           </div>
         )}
 
-        {/* Inne opcje, np. publishInvalidBlock */}
         {maliciousNode.enabled && (
           <div className="flex flex-row space-x-2">
-            {/* Nowe przyciski akcji */}
             <Button
               onClick={() =>
                 maliciousNode
