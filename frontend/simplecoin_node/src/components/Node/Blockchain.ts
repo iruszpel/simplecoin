@@ -253,7 +253,8 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
   },
 
   replaceChain: async (newChain: Block[]): Promise<boolean> => {
-    const { chain, validateChain, disableValidation } = get();
+    const { chain, validateChain, disableValidation, pendingTransactions } =
+      get();
 
     if (disableValidation) {
       set({ chain: newChain });
@@ -265,6 +266,14 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
     if (!isValid) {
       return false;
     }
+
+    const newChainTxIds = new Set(
+      newChain.flatMap((block) => block.transactions.map((tx) => tx.id))
+    );
+
+    const newPendingTransactions = pendingTransactions.filter(
+      (tx) => !newChainTxIds.has(tx.id)
+    );
 
     if (newChain.length < chain.length) {
       get().addFork(newChain);
@@ -279,7 +288,7 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
 
     set({
       chain: newChain,
-
+      pendingTransactions: newPendingTransactions,
       forks: [],
     });
     return true;

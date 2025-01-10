@@ -89,11 +89,9 @@ export const Node: React.FC = () => {
 
     const isValid = await blockchain.replaceChain(receivedChain);
     if (isValid) {
-      blockchain.clearPendingTransactions();
-
       setMessages((prev) => [
         ...prev,
-        `Blockchain updated with received chain. Pending transactions cleared.`,
+        `Blockchain updated with received chain. Pending transactions updated.`,
       ]);
     } else {
       setMessages((prev) => [...prev, `Received invalid blockchain`]);
