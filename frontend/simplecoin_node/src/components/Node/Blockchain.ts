@@ -182,8 +182,14 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
   },
 
   addBlock: async (block: Block): Promise<boolean> => {
-    const { chain, validateChain, forks } = get();
+    const { chain, validateChain, forks, disableValidation } = get();
     console.log("Attempting to add block:", block);
+
+    if (disableValidation) {
+      set({ chain: [...chain, block] });
+      console.log("Block added to the main chain.");
+      return true;
+    }
 
     if (block.previousHash === chain[chain.length - 1].hash) {
       console.log("Block is a direct extension of the main chain.");
