@@ -465,12 +465,12 @@ export const Node: React.FC = () => {
                   .then(() =>
                     setMessages((prev) => [
                       ...prev,
-                      "Malicious node tried to publish invalid block.",
+                      "Created invalid block and added to chain",
                     ])
                   )
               }
             >
-              Publish Invalid Block
+              Create Invalid Block
             </Button>
 
             <Button
