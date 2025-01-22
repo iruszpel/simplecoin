@@ -10,6 +10,7 @@ import { usePeerConnections } from "./hooks/usePeerConnections";
 import { useSignaling } from "./hooks/useSignaling";
 import { useMessaging } from "./hooks/useMessaging";
 import { Block, Transaction } from "./Block";
+import { useMaliciousNodeStore } from "./MaliciousNode";
 
 export const Node: React.FC = () => {
   const [nodeId] = useState<string>(uuidv4());
@@ -19,6 +20,7 @@ export const Node: React.FC = () => {
   const [rewardAddress, setRewardAddress] = useState<string>(nodeId);
   const [transactionJson, setTransactionJson] = useState<string>("");
   const seenMessages = useRef<Set<string>>(new Set());
+  const maliciousNode = useMaliciousNodeStore();
 
   const blockchain = useBlockchainStore();
   const currentBlock = blockchain.getLatestBlock();
@@ -36,16 +38,28 @@ export const Node: React.FC = () => {
 
     try {
       const success = await blockchain.addBlock(newBlock);
+
       if (success) {
         setMessages((prev) => [
           ...prev,
-          `Received valid block ${newBlock.index}`,
+          `Received valid block ${newBlock.index} and added to chain`,
         ]);
       } else {
         setMessages((prev) => [
           ...prev,
-          `Received invalid block ${newBlock.index}`,
+          `Received invalid block ${newBlock.index} (could not add)`,
+          `Requesting blockchain from peers...`,
         ]);
+
+        handleBroadcastToAllButSome(
+          {
+            type: "message",
+            messageType: "request-blockchain",
+            nodeId,
+            messageId: window.crypto.randomUUID(),
+          },
+          []
+        );
       }
     } catch (error) {
       setMessages((prev) => [...prev, `Block error: ${error}`]);
@@ -75,11 +89,9 @@ export const Node: React.FC = () => {
 
     const isValid = await blockchain.replaceChain(receivedChain);
     if (isValid) {
-      blockchain.clearPendingTransactions();
-
       setMessages((prev) => [
         ...prev,
-        `Blockchain updated with received chain. Pending transactions cleared.`,
+        `Blockchain updated with received chain. Pending transactions updated.`,
       ]);
     } else {
       setMessages((prev) => [...prev, `Received invalid blockchain`]);
@@ -88,6 +100,7 @@ export const Node: React.FC = () => {
 
   const handleDataChannelMessage = async (data: any, senderId: string) => {
     const message = JSON.parse(data);
+
     switch (message.type) {
       case "peer-list": {
         const newPeers = message.peers.filter(
@@ -98,12 +111,13 @@ export const Node: React.FC = () => {
         });
         break;
       }
+
       case "offer":
       case "answer":
         handleSignalingMessage(message);
         break;
-      case "message":
-        console.log("Received message", message);
+
+      case "message": {
         if (!seenMessages.current.has(message.messageId)) {
           seenMessages.current.add(message.messageId);
 
@@ -114,6 +128,7 @@ export const Node: React.FC = () => {
                 `From ${senderId}: ${message.content} (original sender: ${message.nodeId})`,
               ]);
               break;
+
             case "new-block":
               await handleReceivedBlock(message.block);
               setMessages((prev) => [
@@ -121,6 +136,7 @@ export const Node: React.FC = () => {
                 `Received new block from ${senderId}`,
               ]);
               break;
+
             case "blockchain":
               await handleReceivedBlockchain(message.chain);
               setMessages((prev) => [
@@ -128,6 +144,7 @@ export const Node: React.FC = () => {
                 `Received blockchain from ${senderId}`,
               ]);
               break;
+
             case "new-transaction":
               try {
                 handleReceivedTransaction(message.transaction);
@@ -135,6 +152,30 @@ export const Node: React.FC = () => {
                 setMessages((prev) => [...prev, `Transaction error: ${error}`]);
               }
               break;
+
+            case "request-blockchain":
+              setMessages((prev) => [
+                ...prev,
+                `Received blockchain request from ${senderId}`,
+              ]);
+              dataChannels.current.forEach((channel, peerId) => {
+                if (peerId === senderId && channel.readyState === "open") {
+                  const blockchainMessage = {
+                    type: "message",
+                    messageType: "blockchain",
+                    chain: blockchain.getBlockchain(),
+                    nodeId,
+                    messageId: window.crypto.randomUUID(),
+                  };
+                  setMessages((prev) => [
+                    ...prev,
+                    `Sending blockchain to ${senderId} because they requested it`,
+                  ]);
+                  channel.send(JSON.stringify(blockchainMessage));
+                }
+              });
+              break;
+
             default:
               console.log("Unknown messageType", message.messageType);
               break;
@@ -143,6 +184,7 @@ export const Node: React.FC = () => {
           handleBroadcastToAllButSome(message, [senderId, message.nodeId]);
         }
         break;
+      }
 
       default:
         break;
@@ -183,8 +225,9 @@ export const Node: React.FC = () => {
 
   const handleMineTransactions = async () => {
     await blockchain.minePendingTransactions(rewardAddress);
-
-    broadcastBlock(blockchain.getLatestBlock());
+    if (!maliciousNode.withholding) {
+      broadcastBlock(blockchain.getLatestBlock());
+    }
     setMessages((prev) => [...prev, "Mined new block"]);
   };
 
@@ -192,7 +235,7 @@ export const Node: React.FC = () => {
     const blockchainMessage = {
       type: "message",
       messageType: "blockchain",
-      chain: blockchain.chain,
+      chain: blockchain.getBlockchain(),
       nodeId,
       messageId: window.crypto.randomUUID(),
     };
@@ -312,6 +355,7 @@ export const Node: React.FC = () => {
           ))}
         </ul>
       </div>
+
       <div>
         <Input
           type="text"
@@ -321,6 +365,7 @@ export const Node: React.FC = () => {
         />
         <Button onClick={() => handleBroadcastMessage()}>Send</Button>
       </div>
+
       <div>
         <h2>Messages</h2>
         <ul>
@@ -356,6 +401,141 @@ export const Node: React.FC = () => {
           cols={60}
         />
         <Button onClick={handleAddTransactionFromJson}>Add Transaction</Button>
+      </div>
+
+      <div>
+        <h2>Malicious Node Testing</h2>
+        <div>
+          <input
+            type="checkbox"
+            checked={maliciousNode.enabled}
+            onChange={(e) => {
+              maliciousNode.setEnabled(e.target.checked);
+              setMessages((prev) => [
+                ...prev,
+                `Malicious node: ${e.target.checked ? "ENABLED" : "DISABLED"}`,
+              ]);
+            }}
+          />
+          <label>Enable Malicious Behavior</label>
+        </div>
+
+        {maliciousNode.enabled && (
+          <div className="flex flex-col">
+            <div>
+              <input
+                type="checkbox"
+                checked={maliciousNode.withholding}
+                onChange={(e) => {
+                  maliciousNode.setWithholding(e.target.checked);
+                  setMessages((prev) => [
+                    ...prev,
+                    `Block withholding: ${e.target.checked ? "ON" : "OFF"}`,
+                  ]);
+                }}
+              />
+              <label>Enable Withholding</label>
+            </div>
+
+            <div>
+              <input
+                type="checkbox"
+                checked={blockchain.disableValidation}
+                onChange={(e) => {
+                  blockchain.setDisableValidation(e.target.checked);
+                  setMessages((prev) => [
+                    ...prev,
+                    `Validation disabled: ${e.target.checked ? "ON" : "OFF"}`,
+                  ]);
+                }}
+              />
+              <label>
+                Disable Validation of incoming transactions/blocks/blockchains
+              </label>
+            </div>
+          </div>
+        )}
+
+        {maliciousNode.enabled && (
+          <div className="flex flex-row space-x-2">
+            <Button
+              onClick={() =>
+                maliciousNode
+                  .createInvalidBlock(blockchain)
+                  .then(() =>
+                    setMessages((prev) => [
+                      ...prev,
+                      "Created invalid block and added to chain",
+                    ])
+                  )
+              }
+            >
+              Create Invalid Block
+            </Button>
+
+            <Button
+              onClick={() =>
+                maliciousNode
+                  .attemptDoubleSpend(blockchain)
+                  .then(() =>
+                    setMessages((prev) => [
+                      ...prev,
+                      "Malicious node attempts double spend.",
+                    ])
+                  )
+              }
+            >
+              Double Spend
+            </Button>
+
+            <Button
+              onClick={() =>
+                maliciousNode
+                  .reorgChain(blockchain)
+                  .then(() =>
+                    setMessages((prev) => [
+                      ...prev,
+                      "Malicious node forced chain reorg.",
+                    ])
+                  )
+              }
+            >
+              Force Reorg
+            </Button>
+            <Button
+              onClick={() =>
+                handleBroadcastToAllButSome(
+                  {
+                    type: "message",
+                    messageType: "blockchain",
+                    chain: blockchain.getBlockchain(),
+                    nodeId,
+                    messageId: window.crypto.randomUUID(),
+                  },
+                  []
+                )
+              }
+            >
+              Broadcast current blockchain
+            </Button>
+            <Button
+              onClick={() =>
+                handleBroadcastToAllButSome(
+                  {
+                    type: "message",
+                    messageType: "new-block",
+                    block: blockchain.getLatestBlock(),
+                    nodeId,
+                    messageId: window.crypto.randomUUID(),
+                  },
+                  []
+                )
+              }
+            >
+              Broadcast last block only
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

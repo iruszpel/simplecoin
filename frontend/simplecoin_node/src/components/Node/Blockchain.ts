@@ -2,16 +2,24 @@ import { create } from "zustand";
 import { Block, Transaction } from "./Block";
 import { base64ToArrayBuffer, generateWalletAddress } from "./utils";
 
-interface BlockchainState {
+export interface BlockchainState {
   chain: Block[];
   difficulty: number;
   pendingTransactions: Transaction[];
   isMining: boolean;
   miningReward: number;
+  disableValidation: boolean;
+
+  forks: Block[][];
+  activeForkIndex: number;
+
+  setDisableValidation: (disableValidation: boolean) => void;
+  isValidationDisabled: () => boolean;
+  getBlockchain: () => Block[];
   getLatestBlock: () => Block;
   minePendingTransactions: (miningRewardAddress: string) => Promise<void>;
   createTransaction: (transaction: Transaction) => Promise<void>;
-  getBalanceOfAddress: (address: string, chain: Block[]) => number;
+  getBalanceOfAddress: (address: string, chain?: Block[]) => number;
   addBlock: (block: Block) => Promise<boolean>;
   replaceChain: (newChain: Block[]) => Promise<boolean>;
   clearPendingTransactions: () => void;
@@ -21,6 +29,11 @@ interface BlockchainState {
     pendingTransactions?: Transaction[]
   ) => Promise<boolean>;
   validateChain: (chain: Block[]) => Promise<boolean>;
+
+  addFork: (fork: Block[]) => void;
+  getForks: () => Block[][];
+  switchToFork: (forkIndex: number) => void;
+  recycleTransactions: (block: Block) => void;
 }
 
 const genesisBlock = new Block(0, 17321402820000, [], "0");
@@ -33,6 +46,69 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
   pendingTransactions: [],
   miningReward: 50,
   isMining: false,
+  disableValidation: false,
+
+  forks: [],
+  activeForkIndex: 0,
+
+  addFork: (fork: Block[]) => {
+    set((state) => ({
+      forks: [...state.forks, fork],
+    }));
+  },
+
+  getForks: () => {
+    return get().forks;
+  },
+
+  switchToFork: (forkIndex: number) => {
+    const { forks } = get();
+    if (forkIndex >= 0 && forkIndex < forks.length) {
+      set({
+        chain: forks[forkIndex],
+        activeForkIndex: forkIndex,
+      });
+    }
+  },
+
+  recycleTransactions: async (block: Block) => {
+    const { chain, pendingTransactions, validateTransaction } = get();
+    const chainTxIds = new Set(
+      chain.flatMap((b) => b.transactions.map((tx) => tx.id))
+    );
+
+    const validNewTxs: Transaction[] = [];
+    for (const tx of block.transactions) {
+      if (!chainTxIds.has(tx.id) && tx.fromAddress !== null) {
+        const isValidTx = await validateTransaction(
+          tx,
+          chain,
+          pendingTransactions
+        );
+        if (isValidTx) {
+          validNewTxs.push(tx);
+        }
+      }
+    }
+
+    if (validNewTxs.length > 0) {
+      set({
+        pendingTransactions: [...pendingTransactions, ...validNewTxs],
+      });
+    }
+  },
+
+  setDisableValidation: (disableValidation: boolean) => {
+    set({ disableValidation });
+  },
+
+  isValidationDisabled: () => {
+    return get().disableValidation;
+  },
+
+  getBlockchain: () => {
+    return get().chain;
+  },
 
   getLatestBlock: () => {
     const { chain } = get();
@@ -47,6 +123,7 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
       difficulty,
       getLatestBlock,
     } = get();
+
     const coinbaseTx: Transaction = {
       id: crypto.randomUUID(),
       timestamp: Date.now(),
@@ -56,7 +133,7 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
       nonce: crypto.randomUUID(),
     };
 
-    const block = new Block(
+    const newBlock = new Block(
       chain.length,
       Date.now(),
       [coinbaseTx, ...pendingTransactions],
@@ -64,9 +141,9 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
     );
 
     set({ isMining: true });
-    await block.mineBlock(difficulty);
+    await newBlock.mineBlock(difficulty);
     set((state) => ({
-      chain: [...state.chain, block],
+      chain: [...state.chain, newBlock],
       pendingTransactions: [],
       isMining: false,
     }));
@@ -105,39 +182,121 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
   },
 
   addBlock: async (block: Block): Promise<boolean> => {
-    const { chain, validateChain } = get();
-    const newChain = [...chain, block];
-    const isValid = await validateChain(newChain);
+    const { chain, validateChain, forks, disableValidation } = get();
+    console.log("Attempting to add block:", block);
 
-    if (!isValid) {
-      console.error("New block is invalid");
-      return false;
+    if (disableValidation) {
+      set({ chain: [...chain, block] });
+      console.log("Block added to the main chain.");
+      return true;
     }
 
-    set({ chain: newChain, pendingTransactions: [] });
-    return true;
+    if (block.previousHash === chain[chain.length - 1].hash) {
+      console.log("Block is a direct extension of the main chain.");
+      const newChain = [...chain, block];
+      const isValid = await validateChain(newChain);
+
+      if (isValid) {
+        set({ chain: newChain });
+        console.log("Block added to the main chain.");
+        return true;
+      } else {
+        get().recycleTransactions(block);
+        console.log("Block is invalid. Transactions recycled.");
+        return false;
+      }
+    }
+
+    for (let i = 0; i < forks.length; i++) {
+      const fork = forks[i];
+      if (block.previousHash === fork[fork.length - 1].hash) {
+        console.log(`Block is a direct extension of fork ${i}.`);
+        const newFork = [...fork, block];
+        const isValid = await validateChain(newFork);
+
+        if (isValid) {
+          set((state) => ({
+            forks: state.forks.map((f, idx) => (idx === i ? newFork : f)),
+          }));
+          console.log(`Block added to fork ${i}.`);
+
+          if (newFork.length > chain.length) {
+            get().switchToFork(i);
+            console.log(`Switched to fork ${i} as the main chain.`);
+          }
+          return true;
+        } else {
+          get().recycleTransactions(block);
+          console.log(`Block is invalid in fork ${i}. Transactions recycled.`);
+          return false;
+        }
+      }
+    }
+
+    const parentBlock = chain.find((b) => b.hash === block.previousHash);
+    if (parentBlock) {
+      const parentIndex = chain.indexOf(parentBlock);
+      console.log("Block is creating a new fork.");
+      const newFork = [...chain.slice(0, parentIndex + 1), block];
+      const isValid = await validateChain(newFork);
+
+      if (isValid) {
+        get().addFork(newFork);
+        console.log("New fork created and block added.");
+        return true;
+      } else {
+        get().recycleTransactions(block);
+        console.log("Block is invalid in new fork. Transactions recycled.");
+        return false;
+      }
+    }
+
+    get().recycleTransactions(block);
+    console.log(
+      "Block is invalid and does not fit anywhere. Transactions recycled."
+    );
+    return false;
   },
 
   replaceChain: async (newChain: Block[]): Promise<boolean> => {
-    const { chain, validateChain } = get();
+    const { chain, validateChain, disableValidation, pendingTransactions } =
+      get();
 
-    if (!newChain || newChain.length === 0) {
-      console.error("Received empty chain");
-      return false;
-    }
+    if (disableValidation) {
+      set({ chain: newChain });
 
-    if (newChain.length <= chain.length) {
-      console.error("Received chain is not longer than current chain");
-      return false;
+      return true;
     }
 
     const isValid = await validateChain(newChain);
     if (!isValid) {
-      console.error("Received chain is invalid");
       return false;
     }
 
-    set({ chain: newChain });
+    const newChainTxIds = new Set(
+      newChain.flatMap((block) => block.transactions.map((tx) => tx.id))
+    );
+
+    const newPendingTransactions = pendingTransactions.filter(
+      (tx) => !newChainTxIds.has(tx.id)
+    );
+
+    if (newChain.length < chain.length) {
+      get().addFork(newChain);
+      return false;
+    }
+
+    if (newChain.length === chain.length) {
+      get().addFork(newChain);
+
+      return false;
+    }
+
+    set({
+      chain: newChain,
+      pendingTransactions: newPendingTransactions,
+      forks: [],
+    });
     return true;
   },
 
@@ -146,7 +305,11 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
   },
 
   validateChain: async (chain: Block[]): Promise<boolean> => {
-    const { difficulty, validateTransaction } = get();
+    const { difficulty, validateTransaction, disableValidation } = get();
+
+    if (disableValidation) {
+      return true;
+    }
 
     const genesisBlock = chain[0];
     if (
@@ -173,14 +336,13 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
       }
 
       const chainUpToPrevious = chain.slice(0, i);
-
       for (const transaction of currentBlock.transactions) {
-        const isValidTransaction = await validateTransaction(
+        const isValidTx = await validateTransaction(
           transaction,
           chainUpToPrevious,
           []
         );
-        if (!isValidTransaction) {
+        if (!isValidTx) {
           console.error(
             `Invalid transaction ${transaction.id} in block ${currentBlock.index}`
           );
@@ -188,12 +350,13 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
         }
       }
 
-      const coinbaseTransactions = currentBlock.transactions.filter(
+      const coinbaseTxs = currentBlock.transactions.filter(
         (tx) => tx.fromAddress === null
       );
-
-      if (coinbaseTransactions.length !== 1) {
-        console.error("Invalid coinbase transaction");
+      if (coinbaseTxs.length !== 1) {
+        console.error(
+          `Invalid coinbase transaction count in block ${currentBlock.index}`
+        );
         return false;
       }
     }
@@ -206,19 +369,21 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
     chain: Block[] = get().chain,
     pendingTransactions: Transaction[] = get().pendingTransactions
   ): Promise<boolean> => {
-    const { miningReward } = get();
+    const { miningReward, disableValidation } = get();
+
+    if (disableValidation) {
+      return true;
+    }
 
     if (transaction.fromAddress === null) {
       if (transaction.toAddress === null) {
         console.error("Invalid coinbase transaction");
         return false;
       }
-
       if (transaction.amount !== miningReward) {
         console.error("Invalid mining reward amount");
         return false;
       }
-
       return true;
     }
 
@@ -235,7 +400,6 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
       console.error("Public key is missing");
       return false;
     }
-
     const generatedAddress = await generateWalletAddress(transaction.publicKey);
     if (generatedAddress !== transaction.fromAddress) {
       console.error("Public key does not match fromAddress");
@@ -261,7 +425,6 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
       transaction.fromAddress,
       chain
     );
-
     const pendingAmount = pendingTransactions
       .filter((tx) => tx.fromAddress === transaction.fromAddress)
       .reduce((sum, tx) => sum + tx.amount, 0);
@@ -292,14 +455,14 @@ export const useBlockchainStore = create<BlockchainState>((set, get) => ({
           ["verify"]
         );
 
-        const isValid = await crypto.subtle.verify(
+        const isValidSig = await crypto.subtle.verify(
           { name: "ECDSA", hash: "SHA-256" },
           cryptoKey,
           signatureBuffer,
           msgBuffer
         );
 
-        if (!isValid) {
+        if (!isValidSig) {
           console.error("Invalid signature");
           return false;
         }
